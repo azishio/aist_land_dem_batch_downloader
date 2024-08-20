@@ -1,0 +1,6 @@
+[package]
+name = "aist_land_dem_batch_downloader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
