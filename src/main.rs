@@ -159,28 +159,30 @@ fn main() -> anyhow::Result<()> {
         });
     }
 
-    let pixels = big_tile
-        .chunks(4)
-        .map(|chunk| {
-            let float = f32::from_be_bytes(chunk.try_into().unwrap()) as f64;
+    //// 複数プロセスが動いたときに待ち合わせしないと問題が起きそうなのでコメントアウト
+    //
+    // let pixels = big_tile
+    //     .chunks(4)
+    //     .map(|chunk| {
+    //         let float = f32::from_be_bytes(chunk.try_into().unwrap()) as f64;
 
-            // 0から8848(エベレスト)までの値に正規化
-            let normalized = (float / 8848.0) * 255.0;
-            normalized as u8
-        })
-        .collect::<Vec<_>>();
+    //         // 0から8848(エベレスト)までの値に正規化
+    //         let normalized = (float / 8848.0) * 255.0;
+    //         normalized as u8
+    //     })
+    //     .collect::<Vec<_>>();
 
-    let jpg = File::create(OUTPUT_JPG_PATH)?;
-    let mut jpg_encoder = jpeg::JpegEncoder::new(jpg);
-    let image_size = TILE_SIZE * 2_u64.pow(ZOOM_LV);
-    jpg_encoder
-        .encode(
-            pixels.as_slice(),
-            image_size as u32,
-            image_size as u32,
-            image::ExtendedColorType::L8,
-        )
-        .unwrap();
+    // let jpg = File::create(OUTPUT_JPG_PATH)?;
+    // let mut jpg_encoder = jpeg::JpegEncoder::new(jpg);
+    // let image_size = TILE_SIZE * 2_u64.pow(ZOOM_LV);
+    // jpg_encoder
+    //     .encode(
+    //         pixels.as_slice(),
+    //         image_size as u32,
+    //         image_size as u32,
+    //         image::ExtendedColorType::L8,
+    //     )
+    //     .unwrap();
 
     Ok(())
 }
