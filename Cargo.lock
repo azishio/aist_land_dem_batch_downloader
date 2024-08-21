@@ -32,7 +32,6 @@ dependencies = [
  "isahc",
  "memmap2",
  "mpi",
- "rayon",
 ]
 
 [[package]]
