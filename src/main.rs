@@ -1,8 +1,10 @@
-use image::codecs::jpeg;
+// use image::codecs::jpeg;
 use isahc::ReadResponseExt;
 use memmap2::MmapOptions;
 use std::fs::OpenOptions;
 use std::io::Cursor;
+
+use std::mem::size_of;
 
 use std::fs::File;
 
