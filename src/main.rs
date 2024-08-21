@@ -1,5 +1,8 @@
-use std::io::{BufReader,BufWriter,Write ,Cursor, SeekFrom, Seek};
-use futures::future::join_all;
+use isahc::ReadResponseExt;
+use memmap2::MmapOptions;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use std::fs::OpenOptions;
+use std::io::Cursor;
 
 use std::fs::File;
 
@@ -8,60 +11,72 @@ use image::ImageReader;
 #[cfg(feature = "mpi")]
 use mpi::traits::Communicator;
 
-const ZOOM_LV: u32 = 2;
-const OUTPUT_FILE: &str = "./result.bin";
-const WRITER_CAPACITY: usize = size_of::<f32>() * 1024;
+pub const ZOOM_LV: u32 = 4;
+pub const OUTPUT_BIN_PATH: &str = "./result.bin";
 
-const NUM_OF_PIXELS: u64 = 256 * 256;
+const IMAGE_SIZE: u64 = 256;
+const NUM_OF_PIXELS: u64 = IMAGE_SIZE * IMAGE_SIZE;
 
 #[cfg(feature = "mpi")]
 fn mpi_init() -> (usize, usize) {
     let universe = mpi::initialize().expect("Faild to initialize MPI");
     let world = universe.world();
-    let size = world.size() as usize;
-    let rank = world.rank() as usize;
+    let size = world.size() as u64;
+    let rank = world.rank() as u64;
     (size, rank)
 }
 
 // MPIが無効の場合は1プロセスで実行
 #[cfg(not(feature = "mpi"))]
-fn mpi_init() -> (usize, usize) {
+fn mpi_init() -> (u64, u64) {
     (1, 0)
 }
 
 // 画像を取得して標高データを返す
-async fn fetch(x: usize, y: usize) -> anyhow::Result<Vec<f32>> {
+fn fetch(x: u64, y: u64) -> anyhow::Result<Vec<f32>> {
     let url = format!("https://tiles.gsj.jp/tiles/elev/land/{ZOOM_LV}/{y}/{x}.png");
     // いちいちクライアントを作るので遅い
-    let res = reqwest::get(&url).await?.bytes().await?;
+    let mut res = isahc::get(&url).expect("Failed to get");
 
-    let cursor = Cursor::new(res);
-    let reader = BufReader::new(cursor);
-    let png = ImageReader::new(reader).decode()?;
+    if res.status().is_success() {
+        let bytes = res.bytes().unwrap();
 
-    // 画像のRGB値を標高データに変換
-    let altitude= png.into_rgb8().pixels().map(|pixel| {
-        let r = pixel[0] as f64;
-        let g = pixel[1] as f64;
-        let b = pixel[2] as f64;
+        let img = ImageReader::new(Cursor::new(bytes))
+            .with_guessed_format()
+            .unwrap()
+            .decode()
+            .unwrap()
+            .to_rgb8();
 
-        let x = 2_f64.powi(16) * r + 2_f64.powi(8) * g + b;
-        let u = 0.01;
+        // 画像のRGB値を標高データに変換
+        let altitude = img
+            .pixels()
+            .map(|pixel| {
+                let r = pixel[0] as f64;
+                let g = pixel[1] as f64;
+                let b = pixel[2] as f64;
 
-        if x < 2_f64.powi(23) {
-            (x * u) as f32
-        } else if x > 2_f64.powi(23) {
-            ((x - 2_f64.powi(24)) * u) as f32
-        } else {
-            f32::MIN
-        }
-    }).collect();
+                let x = 2_f64.powi(16) * r + 2_f64.powi(8) * g + b;
+                let u = 0.01;
 
-    Ok(altitude)
+                if x < 2_f64.powi(23) {
+                    (x * u) as f32
+                } else if x > 2_f64.powi(23) {
+                    ((x - 2_f64.powi(24)) * u) as f32
+                } else {
+                    f32::MIN
+                }
+            })
+            .collect();
+
+        Ok(altitude)
+    } else {
+        // タイル全体が存在しない場合
+        Ok(vec![f32::MIN; NUM_OF_PIXELS as usize])
+    }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let (size, rank) = mpi_init();
 
     // スレッド数は2の累乗でなければならない
@@ -71,35 +86,58 @@ async fn main() -> anyhow::Result<()> {
         "The number of processes must be a power of 2"
     );
 
+    // スレッド数は1辺のタイル数よりも少なくなければならない
+    assert!(
+        size <= 2_u64.pow(ZOOM_LV),
+        "The number of processes must be less than or equal to the number of tiles on one side"
+    );
+
     // ランク0のプロセスにファイルを作らせる
     if rank == 0 {
-        let file = File::create(OUTPUT_FILE)?;
-        let file_size = NUM_OF_PIXELS * (2_u64.pow(ZOOM_LV)*size_of::<f32>() as u64).pow(2);
+        let file = File::create(OUTPUT_BIN_PATH)?;
+        let file_size = NUM_OF_PIXELS * 2_u64.pow(ZOOM_LV).pow(2) * size_of::<f32>() as u64;
         file.set_len(file_size)?;
     }
 
-
     // 1プロセスあたりの処理量（タイル群高さ）
-    let height = 2_usize.pow(ZOOM_LV) / size;
+    let height = 2_u64.pow(ZOOM_LV) / size;
     let start_h = rank * height;
     let end_h = (rank + 1) * height;
 
     // タイル群の幅
-    let weidth = 2_usize.pow(ZOOM_LV);
-    
-    let works = (start_h..end_h).flat_map(|y|
-        (0..weidth).map(move |x| fetch(x, y))
-    );
+    let weidth = 2_u64.pow(ZOOM_LV);
 
-    let result_bytes = join_all(works).await.into_iter().flatten().flatten().flat_map(|f|f.to_be_bytes());
-    
-    let mut file = File::open(OUTPUT_FILE)?;
-    let offset = NUM_OF_PIXELS * (start_h * weidth * size_of::<f32>()) as u64;
-    file.seek(SeekFrom::Start(offset))?;
-    
-    let mut writer = BufWriter::with_capacity(WRITER_CAPACITY, file);
-    
-    writer.write_all(&result_bytes.collect::<Vec<u8>>())?;
+    let result_bytes = (start_h..end_h)
+        .into_par_iter()
+        .flat_map(|y| (0..weidth).into_par_iter().flat_map(move |x| fetch(x, y)))
+        .flatten()
+        .flat_map(|f| f.to_be_bytes())
+        .collect::<Vec<_>>();
 
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(OUTPUT_BIN_PATH)
+        .expect("Failed to open file");
+
+    let mut mmap = unsafe {
+        let start = NUM_OF_PIXELS * (start_h * weidth) * size_of::<f32>() as u64;
+        MmapOptions::new()
+            .offset(start)
+            .len((NUM_OF_PIXELS * (end_h - start_h) * weidth) as usize * size_of::<f32>())
+            .map_mut(&file)
+    }
+    .expect("Failed to mmap");
+    let start_ptr = mmap.as_mut_ptr();
+
+    unsafe {
+        result_bytes
+            .into_iter()
+            .enumerate()
+            .for_each(|(offset, byte)| {
+                let ptr = start_ptr.add(offset);
+                ptr.write(byte);
+            });
+    }
     Ok(())
 }
