@@ -112,7 +112,10 @@ fn main() -> anyhow::Result<()> {
 
     // 1プロセスあたりの処理量（タイル群高さ）
     let height = 2_u64.pow(ZOOM_LV) / size;
-    let start_h = rank * height;
+    let start_h = match rank {
+        0 => 0,
+        _ => rank * height + 1,
+    };
     let end_h = (rank + 1) * height;
 
     // タイル群の幅
