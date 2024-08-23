@@ -1,8 +1,3 @@
-extern crate anyhow;
-extern crate image;
-extern crate isahc;
-extern crate memmap2;
-
 // use image::codecs::jpeg;
 use isahc::ReadResponseExt;
 use memmap2::MmapOptions;
