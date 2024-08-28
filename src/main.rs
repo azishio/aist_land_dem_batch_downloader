@@ -21,8 +21,8 @@ const TILE_SIZE: u64 = 256;
 const NUM_OF_PIXELS: u64 = TILE_SIZE * TILE_SIZE;
 
 #[cfg(feature = "mpi")]
-fn mpi_init() -> (usize, usize) {
-    let universe = mpi::initialize().expect("Faild to initialize MPI");
+fn mpi_init() -> (u64, u64) {
+    let universe = mpi::initialize().expect("Failed to initialize MPI");
     let world = universe.world();
     let size = world.size() as u64;
     let rank = world.rank() as u64;
@@ -42,13 +42,11 @@ fn fetch(x: u64, y: u64) -> anyhow::Result<Vec<Vec<f32>>> {
     let mut res = isahc::get(&url).expect("Failed to get");
 
     if res.status().is_success() {
-        let bytes = res.bytes().unwrap();
+        let bytes = res.bytes()?;
 
         let img = ImageReader::new(Cursor::new(bytes))
-            .with_guessed_format()
-            .unwrap()
-            .decode()
-            .unwrap()
+            .with_guessed_format()?
+            .decode()?
             .to_rgb8();
 
         // 画像のRGB値を標高データに変換
@@ -114,21 +112,21 @@ fn main() -> anyhow::Result<()> {
     let end_h = (rank + 1) * height;
 
     // タイル群の幅
-    let weidth = 2_u64.pow(ZOOM_LV);
+    let width = 2_u64.pow(ZOOM_LV);
 
     let big_tile = {
         let mut field =
-            vec![vec![f32::MIN; (weidth * TILE_SIZE) as usize]; (height * TILE_SIZE) as usize];
+            vec![vec![f32::MIN; (width * TILE_SIZE) as usize]; (height * TILE_SIZE) as usize];
 
         // 256x256の標高タイルの配列
         (start_h..end_h).into_iter().for_each(|tile_y| {
-            (0..weidth).into_iter().for_each(|tile_x| {
+            (0..width).into_iter().for_each(|tile_x| {
                 if let Ok(tile) = fetch(tile_x, tile_y) {
                     tile.into_iter().enumerate().for_each(|(pixel_y, row)| {
                         row.into_iter().enumerate().for_each(|(pixel_x, altitude)| {
                             let y = (tile_y * TILE_SIZE) as usize + pixel_y;
                             let x = (tile_x * TILE_SIZE) as usize + pixel_x;
-                            field[y as usize][x as usize] = altitude;
+                            field[y][x] = altitude;
                         })
                     })
                 }
@@ -148,10 +146,10 @@ fn main() -> anyhow::Result<()> {
         .expect("Failed to open file");
 
     let mut mmap = unsafe {
-        let start = NUM_OF_PIXELS * (start_h * weidth) * size_of::<f32>() as u64;
+        let start = NUM_OF_PIXELS * (start_h * width) * size_of::<f32>() as u64;
         MmapOptions::new()
             .offset(start)
-            .len((NUM_OF_PIXELS * (end_h - start_h) * weidth) as usize * size_of::<f32>())
+            .len((NUM_OF_PIXELS * (end_h - start_h) * width) as usize * size_of::<f32>())
             .map_mut(&file)
     }
     .expect("Failed to mmap");
